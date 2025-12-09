@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <!-- 核心：优化视口适配（微信+手机） -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <!-- 微信网页优化标签 -->
+  <meta name="format-detection" content="telephone=no, email=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="white">
+  <title>生产线数据看板</title>
+  <!-- 引入外部资源（均为HTTPS，适配微信） -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- 配置Tailwind自定义主题 -->
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#165DFF',
+            secondary: '#0FC6C2',
+            success: '#00B42A',
+            warning: '#FF7D00',
+            danger: '#F53F3F',
+            dark: '#1D2129',
+            light: '#F2F3F5',
+            edit: '#722ED1' // 编辑模式主题色
+          },
+          fontFamily: {
+            inter: ['Inter', 'system-ui', 'sans-serif'],
+          },
+        },
+      }
+    }
+  </script>
+  <!-- 自定义工具类（强化移动端适配） -->
+  <style type="text/tailwindcss">
+    @layer utilities {
+      .content-auto {
+        content-visibility: auto;
+      }
+      .card-shadow {
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+      }
+      .grid-dashboard {
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      }
+      /* 移动端触摸优化 */
+      .touchable {
+        -webkit-tap-highlight-color: transparent;
+        tap-highlight-color: transparent;
+      }
+      /* 编辑模式样式 */
+      .edit-mode {
+        border: 2px dashed #722ED1 !important;
+        background-color: rgba(114, 46, 209, 0.05) !important;
+      }
+      .editable-text {
+        padding: 2px 4px;
+        border-radius: 2px;
+        transition: all 0.2s ease;
+      }
+    }
+  </style>
+  <style>
+    body {
+      font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background-color: #F7F8FA;
+      -webkit-font-smoothing: antialiased; /* 微信字体抗锯齿 */
+      -moz-osx-font-smoothing: grayscale;
+    }
+    /* 滚动条美化（兼容微信） */
+    ::-webkit-scrollbar {
+      width: 4px;
+      height: 4px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 2px;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #c1c1c1;
+      border-radius: 2px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #a8a8a8;
+    }
+    /* 数字动画效果 */
+    .number-animate {
+      transition: all 0.5s ease-out;
+    }
+    /* 微信端禁用长按选中文本（编辑模式除外） */
+    .no-select {
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .edit-mode-active .no-select {
+      -webkit-user-select: auto;
+      user-select: auto;
+    }
+    /* 移动端按钮点击反馈 */
+    .btn-active {
+      transform: scale(0.98);
+      transition: transform 0.1s ease;
+    }
+    /* 编辑输入框适配 */
+    .editable-input {
+      width: 100%;
+      border: 1px solid #722ED1;
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-size: inherit;
+      font-weight: inherit;
+      background-color: #fff;
+      outline: none;
+    }
+    /* 编辑模式提示 */
+    .edit-badge {
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+  </style>
+</head>
+<body class="min-h-screen text-dark touchable no-select" id="app-body">
+  <!-- 顶部导航栏（适配移动端，新增编辑模式切换） -->
+  <header class="bg-white card-shadow sticky top-0 z-50">
+    <div class="container mx-auto px-3 py-2 sm:px-4 sm:py-3 flex items-center justify-between">
+      <div class="flex items-center gap-2 sm:gap-3">
+        <i class="fa fa-line-chart text-primary text-xl sm:text-2xl"></i>
+        <h1 class="text-lg sm:text-xl font-bold text-dark">生产线数据看板</h1>
+      </div>
+      <div class="flex items-center gap-3 sm:gap-6">
+        <!-- 编辑模式切换按钮（核心新增） -->
+        <button id="edit-mode-toggle" class="bg-edit/10 text-edit px-3 py-1.5 sm:px-4 sm:py-2 rounded hover:bg-edit/20 transition-colors flex items-center gap-1 sm:gap-2 text-sm touchable">
+          <i class="fa fa-pencil"></i>
+          <span class="hidden xs:inline" id="edit-mode-text">编辑模式</span>
+          <span class="inline-block w-5 h-5 rounded-full bg-white border border-edit text-edit text-xs flex items-center justify-center edit-badge hidden" id="edit-indicator">✓</span>
+        </button>
+        
+        <!-- 移动端隐藏日期，保留核心操作 -->
+        <div class="hidden sm:flex items-center gap-2">
+          <i class="fa fa-calendar text-gray-500"></i>
+          <span id="current-date" class="text-xs sm:text-sm text-gray-600"></span>
+        </div>
+        <div class="flex items-center gap-2">
+          <i class="fa fa-refresh text-gray-500 cursor-pointer hover:text-primary transition-colors text-lg" id="refresh-btn"></i>
+          <span id="last-update" class="hidden sm:inline text-xs sm:text-sm text-gray-600"></span>
+        </div>
+        <button id="import-excel" class="bg-primary text-white px-3 py-1.5 sm:px-4 sm:py-2 rounded hover:bg-primary/90 transition-colors flex items-center gap-1 sm:gap-2 text-sm touchable">
+          <i class="fa fa-file-excel-o"></i>
+          <span class="hidden xs:inline">导入/导出</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 主要内容区域（全响应式布局） -->
+  <main class="container mx-auto px-3 py-4 sm:px-4 sm:py-6">
+    <!-- 概览卡片（移动端单列，平板/桌面多列） -->
+    <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 mb-6 sm:mb-8">
+      <div class="bg-white rounded-lg p-4 sm:p-6 card-shadow">
+        <div class="flex justify-between items-start mb-3 sm:mb-4">
+          <div>
+            <h2 class="text-gray-500 text-xs sm:text-sm font-medium">总回款金额</h2>
+            <!-- 新增可编辑标识：data-field="total-receivable" -->
+            <p class="text-2xl sm:text-3xl font-bold number-animate editable-text" id="total-receivable" data-field="total-receivable">¥ 0</p>
+          </div>
+          <div class="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-primary/10 flex items-center justify-center">
+            <i class="fa fa-money text-primary text-sm sm:text-base"></i>
+          </div>
+        </div>
+        <div class="flex items-center text-xs sm:text-sm">
+          <span class="text-success flex items-center"><i class="fa fa-arrow-up mr-1"></i> 
+            <span class="editable-text" data-field="receivable-growth-total" data-type="percent">8.2%</span>
+          </span>
+          <span class="text-gray-400 ml-2">较上月</span>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-lg p-4 sm:p-6 card-shadow">
+        <div class="flex justify-between items-start mb-3 sm:mb-4">
+          <div>
+            <h2 class="text-gray-500 text-xs sm:text-sm font-medium">总出货量</h2>
+            <p class="text-2xl sm:text-3xl font-bold number-animate editable-text" id="total-shipment" data-field="total-shipment">0 件</p>
+          </div>
+          <div class="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-secondary/10 flex items-center justify-center">
+            <i class="fa fa-truck text-secondary text-sm sm:text-base"></i>
+          </div>
+        </div>
+        <div class="flex items-center text-xs sm:text-sm">
+          <span class="text-success flex items-center"><i class="fa fa-arrow-up mr-1"></i> 
+            <span class="editable-text" data-field="shipment-growth-total" data-type="percent">5.7%</span>
+          </span>
+          <span class="text-gray-400 ml-2">较上月</span>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-lg p-4 sm:p-6 card-shadow">
+        <div class="flex justify-between items-start mb-3 sm:mb-4">
+          <div>
+            <h2 class="text-gray-500 text-xs sm:text-sm font-medium">总产值</h2>
+            <p class="text-2xl sm:text-3xl font-bold number-animate editable-text" id="total-output" data-field="total-output">¥ 0</p>
+          </div>
+          <div class="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-warning/10 flex items-center justify-center">
+            <i class="fa fa-industry text-warning text-sm sm:text-base"></i>
+          </div>
+        </div>
+        <div class="flex items-center text-xs sm:text-sm">
+          <span class="text-danger flex items-center"><i class="fa fa-arrow-down mr-1"></i> 
+            <span class="editable-text" data-field="output-growth-total" data-type="percent">1.3%</span>
+          </span>
+          <span class="text-gray-400 ml-2">较上月</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 生产线详情与筛选（移动端堆叠，桌面分栏） -->
+    <section class="grid grid-cols-1 lg:grid-cols-4 gap-4 sm:gap-6">
+      <!-- 生产线列表（移动端占满列，桌面占3列） -->
+      <div class="lg:col-span-3 bg-white rounded-lg card-shadow">
+        <div class="p-4 sm:p-6 border-b border-gray-100">
+          <h2 class="text-base sm:text-lg font-semibold">生产线详情</h2>
+        </div>
+        <div class="overflow-y-auto max-h-[500px] sm:max-h-[700px]">
+          <div id="production-lines" class="divide-y divide-gray-100">
+            <!-- 生产线项将通过JS动态生成 -->
+          </div>
+        </div>
+      </div>
+
+      <!-- 数据筛选（移动端占满列，桌面占1列，适配触摸） -->
+      <div class="bg-white rounded-lg p-4 sm:p-6 card-shadow h-fit">
+        <h2 class="text-base sm:text-lg font-semibold mb-3 sm:mb-4">数据筛选</h2>
+        <div class="space-y-3 sm:space-y-4">
+          <div>
+            <label class="block text-xs sm:text-sm text-gray-600 mb-1.5">生产线</label>
+            <select id="line-filter" class="w-full p-2 border border-gray-200 rounded focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm touchable">
+              <option value="all">全部生产线</option>
+              <option value="1">生产线1</option>
+              <option value="2">生产线2</option>
+              <option value="3">生产线3</option>
+              <option value="4">生产线4</option>
+              <option value="5">生产线5</option>
+              <option value="6">生产线6</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs sm:text-sm text-gray-600 mb-1.5">指标类型</label>
+            <div class="grid grid-cols-3 gap-1.5 sm:gap-2">
+              <label class="flex items-center p-2 border border-gray-200 rounded cursor-pointer hover:bg-gray-50 text-xs touchable">
+                <input type="checkbox" checked class="mr-1.5 accent-primary" value="receivable">
+                <span>回款</span>
+              </label>
+              <label class="flex items-center p-2 border border-gray-200 rounded cursor-pointer hover:bg-gray-50 text-xs touchable">
+                <input type="checkbox" checked class="mr-1.5 accent-primary" value="shipment">
+                <span>出货</span>
+              </label>
+              <label class="flex items-center p-2 border border-gray-200 rounded cursor-pointer hover:bg-gray-50 text-xs touchable">
+                <input type="checkbox" checked class="mr-1.5 accent-primary" value="output">
+                <span>产值</span>
+              </label>
+            </div>
+          </div>
+          <button id="apply-filter" class="w-full bg-primary text-white py-2 rounded hover:bg-primary/90 transition-colors text-sm touchable">
+            应用筛选
+          </button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Excel导入/导出模态框（适配手机，宽度90%） -->
+  <div id="excel-modal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 hidden p-3">
+    <div class="bg-white rounded-lg w-full max-w-md sm:max-w-md max-w-[90%] p-4 sm:p-6">
+      <div class="flex justify-between items-center mb-4">
+        <h3 class="text-base sm:text-lg font-semibold">Excel数据管理</h3>
+        <button id="close-modal" class="text-gray-500 hover:text-gray-700 touchable">
+          <i class="fa fa-times text-lg"></i>
+        </button>
+      </div>
+      
+      <!-- 模板下载区域（移动端优化） -->
+      <div class="mb-5 p-3 sm:p-4 bg-primary/5 rounded-lg border border-primary/20">
+        <div class="flex items-center gap-2 sm:gap-3 mb-2">
+          <i class="fa fa-download text-primary"></i>
+          <h4 class="font-medium text-sm sm:text-base">下载数据模板</h4>
+        </div>
+        <p class="text-xs sm:text-sm text-gray-600 mb-2 sm:mb-3">下载标准模板填写数据，可快速导入更新看板</p>
+        <button id="download-template" class="px-3 py-1.5 sm:px-4 sm:py-2 bg-primary text-white rounded hover:bg-primary/90 transition-colors text-sm touchable">
+          <i class="fa fa-file-excel-o mr-1 sm:mr-2"></i>下载模板
+        </button>
+      </div>
+      
+      <!-- 文件上传区域（适配手机触摸） -->
+      <div class="mb-4">
+        <p class="text-xs sm:text-sm text-gray-600 mb-2">上传填写好的模板文件（支持.xlsx格式）</p>
+        <div class="border-2 border-dashed border-gray-300 rounded-lg p-5 sm:p-6 text-center hover:border-primary transition-colors cursor-pointer touchable" id="file-drop-area">
+          <i class="fa fa-file-excel-o text-3xl sm:text-4xl text-gray-400 mb-2"></i>
+          <p class="text-xs sm:text-sm text-gray-500 mb-2">点击或拖拽文件到此处</p>
+          <p class="text-xs text-gray-400">支持的格式: .xlsx</p>
+          <input type="file" id="excel-file" accept=".xlsx, .xls" class="hidden">
+        </div>
+      </div>
+      
+      <div class="mb-4 hidden" id="file-info">
+        <div class="flex items-center p-2 bg-gray-50 rounded">
+          <i class="fa fa-file-excel-o text-primary mr-2"></i>
+          <span id="file-name" class="text-xs sm:text-sm flex-1 truncate"></span>
+          <span id="file-size" class="text-xs text-gray-500"></span>
+        </div>
+      </div>
+      
+      <div class="flex justify-end gap-2 sm:gap-2">
+        <button id="cancel-import" class="px-3 py-1.5 sm:px-4 sm:py-2 border border-gray-300 rounded hover:bg-gray-50 transition-colors text-sm touchable">
+          取消
+        </button>
+        <button id="confirm-import" class="px-3 py-1.5 sm:px-4 sm:py-2 bg-primary text-white rounded hover:bg-primary/90 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed text-sm touchable">
+          确认导入
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 页脚（移动端简化） -->
+  <footer class="bg-white mt-6 sm:mt-10 py-3 sm:py-6 border-t border-gray-200">
+    <div class="container mx-auto px-3 sm:px-4 text-center text-gray-500 text-xs sm:text-sm">
+      <p>生产线数据看板 © 2025 | 数据更新时间: <span id="footer-update"></span></p>
+      <p class="mt-1 text-edit hidden" id="edit-mode-footer">当前处于编辑模式，点击数字可直接修改</p>
+    </div>
+  </footer>
+
+  <script>
+    // 核心生产线数据（全局变量，可被Excel导入/编辑更新）
+    let productionData = [
+      { id: 1, name: '生产线1', receivable: 1258000, shipment: 8560, output: 1856000, receivableGrowth: 8.5, shipmentGrowth: 6.2, outputGrowth: 2.3 },
+      { id: 2, name: '生产线2', receivable: 985000, shipment: 7240, output: 1568000, receivableGrowth: 5.3, shipmentGrowth: 4.8, outputGrowth: -1.2 },
+      { id: 3, name: '生产线3', receivable: 1568000, shipment: 9850, output: 2156000, receivableGrowth: 12.8, shipmentGrowth: 9.5, outputGrowth: 5.8 },
+      { id: 4, name: '生产线4', receivable: 875000, shipment: 6580, output: 1325000, receivableGrowth: 3.7, shipmentGrowth: 2.4, outputGrowth: -3.5 },
+      { id: 5, name: '生产线5', receivable: 1125000, shipment: 7890, output: 1785000, receivableGrowth: 7.9, shipmentGrowth: 8.1, outputGrowth: 4.2 },
+      { id: 6, name: '生产线6', receivable: 1368000, shipment: 8920, output: 1987000, receivableGrowth: 9.4, shipmentGrowth: 7.8, outputGrowth: 3.9 }
+    ];
+
+    // 全局编辑模式状态
+    let isEditMode = false;
+    // 总计增长率数据（用于编辑）
+    let totalGrowthData = {
+      receivable: 8.2,
+      shipment: 5.7,
+      output: -1.3
+    };
+
+    // DOM元素
+    const elements = {
+      currentDate: document.getElementById('current-date'),
+      lastUpdate: document.getElementById('last-update'),
+      footerUpdate: document.getElementById('footer-update'),
+      refreshBtn: document.getElementById('refresh-btn'),
+      importExcelBtn: document.getElementById('import-excel'),
+      excelModal: document.getElementById('excel-modal'),
+      closeModalBtn: document.getElementById('close-modal'),
+      cancelImportBtn: document.getElementById('cancel-import'),
+      confirmImportBtn: document.getElementById('confirm-import'),
+      downloadTemplateBtn: document.getElementById('download-template'),
+      fileDropArea: document.getElementById('file-drop-area'),
+      excelFile: document.getElementById('excel-file'),
+      fileInfo: document.getElementById('file-info'),
+      fileName: document.getElementById('file-name'),
+      fileSize: document.getElementById('file-size'),
+      totalReceivable: document.getElementById('total-receivable'),
+      totalShipment: document.getElementById('total-shipment'),
+      totalOutput: document.getElementById('total-output'),
+      productionLines: document.getElementById('production-lines'),
+      lineFilter: document.getElementById('line-filter'),
+      applyFilterBtn: document.getElementById('apply-filter'),
+      // 新增编辑模式相关元素
+      editModeToggle: document.getElementById('edit-mode-toggle'),
+      editModeText: document.getElementById('edit-mode-text'),
+      editIndicator: document.getElementById('edit-indicator'),
+      appBody: document.getElementById('app-body'),
+      editModeFooter: document.getElementById('edit-mode-footer')
+    };
+
+    // 初始化日期和时间（适配微信端时间显示）
+    function initDateTime() {
+      const now = new Date();
+      const options = { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' };
+      elements.currentDate.textContent = now.toLocaleDateString('zh-CN', options);
+      
+      const updateTime = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      elements.lastUpdate.textContent = `最后更新: ${updateTime}`;
+      elements.footerUpdate.textContent = updateTime;
+    }
+
+    // 格式化数字（适配移动端显示）
+    function formatNumber(num) {
+      if (typeof num !== 'number') return num;
+      // 移动端大数字简化显示（如1258000 → 125.8万）
+      if (window.innerWidth < 768 && num >= 10000) {
+        return (num / 10000).toFixed(1) + '万';
+      }
+      return num.toLocaleString('zh-CN');
+    }
+
+    // 格式化金额（适配移动端）
+    function formatMoney(num) {
+      if (typeof num !== 'number') return num;
+      // 移动端大金额简化显示
+      if (window.innerWidth < 768 && num >= 10000) {
+        return `¥ ${(num / 10000).toFixed(1)}万`;
+      }
+      return `¥ ${num.toLocaleString('zh-CN')}`;
+    }
+
+    // 计算总计数据
+    function calculateTotals() {
+      const totalReceivable = productionData.reduce((sum, line) => sum + line.receivable, 0);
+      const totalShipment = productionData.reduce((sum, line) => sum + line.shipment, 0);
+      const totalOutput = productionData.reduce((sum, line) => sum + line.output, 0);
+      
+      elements.totalReceivable.textContent = formatMoney(totalReceivable);
+      elements.totalShipment.textContent = `${formatNumber(totalShipment)} 件`;
+      elements.totalOutput.textContent = formatMoney(totalOutput);
+      
+      // 更新总计增长率显示
+      document.querySelector('[data-field="receivable-growth-total"]').textContent = `${Math.abs(totalGrowthData.receivable)}%`;
+      document.querySelector('[data-field="shipment-growth-total"]').textContent = `${Math.abs(totalGrowthData.shipment)}%`;
+      document.querySelector('[data-field="output-growth-total"]').textContent = `${Math.abs(totalGrowthData.output)}%`;
+      
+      // 更新增长率颜色
+      document.querySelector('[data-field="receivable-growth-total"]').parentNode.className = 
+        `text-${totalGrowthData.receivable >= 0 ? 'success' : 'danger'} flex items-center`;
+      document.querySelector('[data-field="receivable-growth-total"]').parentNode.querySelector('i').className = 
+        `fa fa-arrow-${totalGrowthData.receivable >= 0 ? 'up' : 'down'} mr-1`;
+      
+      document.querySelector('[data-field="shipment-growth-total"]').parentNode.className = 
+        `text-${totalGrowthData.shipment >= 0 ? 'success' : 'danger'} flex items-center`;
+      document.querySelector('[data-field="shipment-growth-total"]').parentNode.querySelector('i').className = 
+        `fa fa-arrow-${totalGrowthData.shipment >= 0 ? 'up' : 'down'} mr-1`;
+      
+      document.querySelector('[data-field="output-growth-total"]').parentNode.className = 
+        `text-${totalGrowthData.output >= 0 ? 'success' : 'danger'} flex items-center`;
+      document.querySelector('[data-field="output-growth-total"]').parentNode.querySelector('i').className = 
+        `fa fa-arrow-${totalGrowthData.output >= 0 ? 'up' : 'down'} mr-1`;
+    }
+
+    // 渲染生产线列表（适配移动端布局，新增编辑支持）
+    function renderProductionLines(filteredData = productionData) {
+      elements.productionLines.innerHTML = '';
+      
+      filteredData.forEach(line => {
+        const lineElement = document.createElement('div');
+        lineElement.className = 'p-4 sm:p-6 hover:bg-gray-50 transition-colors touchable';
+        // 移动端单列布局，桌面三分栏
+        const gridClass = window.innerWidth < 768 ? 'grid-cols-1 gap-3' : 'grid-cols-3 gap-6';
+        
+        // 为每个可编辑字段添加data属性：data-line-id（生产线ID）、data-field（字段名）、data-type（类型）
+        lineElement.innerHTML = `
+          <div class="flex justify-between items-center mb-3 sm:mb-4">
+            <h3 class="font-semibold text-base sm:text-lg flex items-center">
+              <span class="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs sm:text-sm mr-2 sm:mr-3">${line.id}</span>
+              <span class="editable-text" data-line-id="${line.id}" data-field="name" data-type="text">${line.name}</span>
+            </h3>
+            <span class="text-xs px-2 py-1 sm:px-3 sm:py-1 rounded ${line.outputGrowth >= 0 ? 'bg-success/10 text-success' : 'bg-danger/10 text-danger'}">
+              ${line.outputGrowth >= 0 ? '+' : ''}
+              <span class="editable-text" data-line-id="${line.id}" data-field="outputGrowth" data-type="percent">${line.outputGrowth}</span>%
+            </span>
+          </div>
+          <div class="grid ${gridClass}">
+            <div class="border-l-4 border-primary pl-3 sm:pl-4 py-2">
+              <p class="text-gray-500 text-xs sm:text-sm mb-1">回款金额</p>
+              <p class="font-bold text-lg sm:text-xl editable-text" data-line-id="${line.id}" data-field="receivable" data-type="money">${formatMoney(line.receivable)}</p>
+              <p class="text-xs text-gray-500 mt-1">
+                <span class="${line.receivableGrowth >= 0 ? 'text-success' : 'text-danger'}">
+                  ${line.receivableGrowth >= 0 ? '+' : ''}
+                  <span class="editable-text" data-line-id="${line.id}" data-field="receivableGrowth" data-type="percent">${line.receivableGrowth}</span>%
+                </span> 较上月
+              </p>
+            </div>
+            <div class="border-l-4 border-secondary pl-3 sm:pl-4 py-2">
+              <p class="text-gray-500 text-xs sm:text-sm mb-1">出货量</p>
+              <p class="font-bold text-lg sm:text-xl editable-text" data-line-id="${line.id}" data-field="shipment" data-type="number">${formatNumber(line.shipment)} 件</p>
+              <p class="text-xs text-gray-500 mt-1">
+                <span class="${line.shipmentGrowth >= 0 ? 'text-success' : 'text-danger'}">
+                  ${line.shipmentGrowth >= 0 ? '+' : ''}
+                  <span class="editable-text" data-line-id="${line.id}" data-field="shipmentGrowth" data-type="percent">${line.shipmentGrowth}</span>%
+                </span> 较上月
+              </p>
+            </div>
+            <div class="border-l-4 border-warning pl-3 sm:pl-4 py-2">
+              <p class="text-gray-500 text-xs sm:text-sm mb-1">产值</p>
+              <p class="font-bold text-lg sm:text-xl editable-text" data-line-id="${line.id}" data-field="output" data-type="money">${formatMoney(line.output)}</p>
+              <p class="text-xs text-gray-500 mt-1">
+                <span class="${line.outputGrowth >= 0 ? 'text-success' : 'text-danger'}">
+                  ${line.outputGrowth >= 0 ? '+' : ''}
+                  <span class="editable-text" data-line-id="${line.id}" data-field="outputGrowth" data-type="percent">${line.outputGrowth}</span>%
+                </span> 较上月
+              </p>
+            </div>
+          </div>
+        `;
+        elements.productionLines.appendChild(lineElement);
+      });
+      
+      // 编辑模式下添加样式，绑定编辑事件
+      if (isEditMode) {
+        initEditableElements();
+      }
+    }
+
+    // 切换编辑模式（核心新增功能）
+    function toggleEditMode() {
+      isEditMode = !isEditMode;
+      
+      // 更新UI状态
+      if (isEditMode) {
+        elements.editModeText.textContent = '退出编辑';
+        elements.editIndicator.classList.remove('hidden');
+        elements.appBody.classList.add('edit-mode-active');
+        elements.editModeFooter.classList.remove('hidden');
+        // 为所有可编辑元素添加样式和事件
+        initEditableElements();
+      } else {
+        elements.editModeText.textContent = '编辑模式';
+        elements.editIndicator.classList.add('hidden');
+        elements.appBody.classList.remove('edit-mode-active');
+        elements.editModeFooter.classList.add('hidden');
+        // 移除编辑样式和事件
+        removeEditableElements();
+      }
+      
+      // 重新渲染以更新样式
+      filterProductionLines();
+      calculateTotals();
+    }
+
+    // 初始化可编辑元素（编辑模式下）
+    function initEditableElements() {
+      const editableElements = document.querySelectorAll('.editable-text');
+      
+      editableElements.forEach(el => {
+        // 添加编辑模式样式
+        el.classList.add('edit-mode');
+        
+        // 绑定点击编辑事件
+        el.addEventListener('click', handleElementEdit);
+      });
+    }
+
+    // 移除可编辑元素样式和事件
+    function removeEditableElements() {
+      const editableElements = document.querySelectorAll('.editable-text');
+      
+      editableElements.forEach(el => {
+        el.classList.remove('edit-mode');
+        el.removeEventListener('click', handleElementEdit);
+      });
+    }
+
+    // 处理元素编辑（核心编辑逻辑）
+    function handleElementEdit(e) {
+      if (!isEditMode) return;
+      
+      const el = e.target;
+      const lineId = el.dataset.lineId ? parseInt(el.dataset.lineId) : null;
+      const field = el.dataset.field;
+      const type = el.dataset.type || 'text';
+      
+      // 保存原始值
+      const originalText = el.textContent.replace(/[^\d.-]/g, ''); // 去除非数字字符
+      const originalValue = type === 'text' ? el.textContent : parseFloat(originalText) || 0;
+      
+      // 创建输入框替换原有内容
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'editable-input';
+      
+      // 根据类型设置输入框初始值
+      if (type === 'money') {
+        input.value = originalValue; // 金额显示为纯数字（去掉¥和万）
+      } else if (type === 'percent') {
+        input.value = originalValue; // 百分比显示为纯数字（去掉%）
+      } else if (type === 'number') {
+        input.value = originalValue; // 纯数字
+      } else {
+        input.value = originalValue; // 文本
+      }
+      
+      // 保存原有内容和样式
+      const parent = el.parentNode;
+      const tempEl = document.createElement('span');
+      tempEl.style.display = 'none';
+      parent.insertBefore(tempEl, el);
+      parent.replaceChild(input, el);
+      
+      // 聚焦输入框
+      input.focus();
+      
+      // 绑定失去焦点事件（保存）
+      input.addEventListener('blur', () => saveEditedValue(input, tempEl, el, lineId, field, type));
+      
+      // 绑定回车事件（保存）
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          saveEditedValue(input, tempEl, el, lineId, field, type);
+        }
+      });
+    }
+
+    // 保存编辑后的值
+    function saveEditedValue(input, tempEl, originalEl, lineId, field, type) {
+      const newValue = input.value.trim();
+      let formattedValue = newValue;
+      
+      // 验证并转换值类型
+      if (type === 'money' || type === 'number' || type === 'percent') {
+        if (isNaN(newValue)) {
+          alert('请输入有效的数字！');
+          formattedValue = originalEl.textContent.replace(/[^\d.-]/g, '');
+        } else {
+          formattedValue = parseFloat(newValue);
+        }
+      }
+      
+      // 更新数据源
+      if (lineId) {
+        // 生产线数据更新
+        const lineIndex = productionData.findIndex(item => item.id === lineId);
+        if (lineIndex !== -1) {
+          productionData[lineIndex][field] = formattedValue;
+        }
+      } else {
+        // 总计数据更新
+        if (field === 'receivable-growth-total') {
+          totalGrowthData.receivable = formattedValue;
+        } else if (field === 'shipment-growth-total') {
+          totalGrowthData.shipment = formattedValue;
+        } else if (field === 'output-growth-total') {
+          totalGrowthData.output = formattedValue;
+        }
+      }
+      
+      // 恢复原有元素
+      tempEl.parentNode.replaceChild(originalEl, input);
+      tempEl.parentNode.removeChild(tempEl);
+      
+      // 重新计算和渲染
+      calculateTotals();
+      filterProductionLines();
+      
+      // 更新最后修改时间
+      const now = new Date();
+      const updateTime = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      elements.lastUpdate.textContent = `最后更新: ${updateTime}`;
+      elements.footerUpdate.textContent = updateTime;
+      
+      // 编辑模式下重新绑定事件
+      if (isEditMode) {
+        originalEl.classList.add('edit-mode');
+        originalEl.addEventListener('click', handleElementEdit);
+      }
+    }
+
+    // 筛选生产线数据
+    function filterProductionLines() {
+      const lineId = elements.lineFilter.value;
+      let filteredData = productionData;
+      
+      if (lineId !== 'all') {
+        filteredData = productionData.filter(line => line.id === parseInt(lineId));
+      }
+      
+      renderProductionLines(filteredData);
+    }
+
+    // 生成并下载Excel模板（兼容微信端下载）
+    function downloadExcelTemplate() {
+      // 模板表头和示例数据
+      const templateData = [
+        ['生产线ID', '生产线名称', '回款金额(元)', '出货量(件)', '产值(元)', '回款增长率(%)', '出货增长率(%)', '产值增长率(%)'],
+        [1, '生产线1', 0, 0, 0, 0, 0, 0],
+        [2, '生产线2', 0, 0, 0, 0, 0, 0],
+        [3, '生产线3', 0, 0, 0, 0, 0, 0],
+        [4, '生产线4', 0, 0, 0, 0, 0, 0],
+        [5, '生产线5', 0, 0, 0, 0, 0, 0],
+        [6, '生产线6', 0, 0, 0, 0, 0, 0]
+      ];
+
+      // 创建工作簿和工作表
+      const workbook = XLSX.utils.book_new();
+      const worksheet = XLSX.utils.aoa_to_sheet(templateData);
+      
+      // 设置列宽
+      const wscols = [
+        {wch: 10}, {wch: 12}, {wch: 15}, {wch: 12}, {wch: 12}, 
+        {wch: 15}, {wch: 15}, {wch: 15}
+      ];
+      worksheet['!cols'] = wscols;
+      
+      // 将工作表添加到工作簿
+      XLSX.utils.book_append_sheet(workbook, worksheet, '生产线数据');
+      
+      // 微信端兼容下载
+      try {
+        XLSX.writeFile(workbook, '生产线数据模板.xlsx');
+      } catch (e) {
+        // 降级方案：提示用户保存
+        alert('模板生成成功，请确认允许下载文件');
+      }
+    }
+
+    // 解析上传的Excel模板文件（兼容微信端文件读取）
+    function parseExcelFile(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        
+        reader.onload = function(e) {
+          try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            
+            // 获取第一个工作表
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            
+            // 转换为JSON
+            const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: ['id', 'name', 'receivable', 'shipment', 'output', 'receivableGrowth', 'shipmentGrowth', 'outputGrowth'] });
+            
+            // 移除表头行，转换数据类型
+            const parsedData = jsonData.slice(1).map(row => ({
+              id: parseInt(row.id),
+              name: row.name || `生产线${row.id}`,
+              receivable: parseFloat(row.receivable) || 0,
+              shipment: parseInt(row.shipment) || 0,
+              output: parseFloat(row.output) || 0,
+              receivableGrowth: parseFloat(row.receivableGrowth) || 0,
+              shipmentGrowth: parseFloat(row.shipmentGrowth) || 0,
+              outputGrowth: parseFloat(row.outputGrowth) || 0
+            })).filter(row => !isNaN(row.id) && row.id >= 1 && row.id <= 6);
+            
+            resolve(parsedData);
+          } catch (error) {
+            reject('文件解析失败，请确认是标准模板文件');
+          }
+        };
+        
+        reader.onerror = () => reject('文件读取失败（微信端请确认允许访问文件）');
+        reader.readAsArrayBuffer(file);
+      });
+    }
+
+    // 绑定事件处理程序（强化移动端触摸交互，新增编辑模式切换）
+    function bindEvents() {
+      // 按钮点击反馈（移动端）
+      const btns = document.querySelectorAll('.touchable');
+      btns.forEach(btn => {
+        btn.addEventListener('touchstart', () => {
+          btn.classList.add('btn-active');
+        });
+        btn.addEventListener('touchend', () => {
+          btn.classList.remove('btn-active');
+        });
+        btn.addEventListener('touchcancel', () => {
+          btn.classList.remove('btn-active');
+        });
+      });
+
+      // 新增：编辑模式切换按钮
+      elements.editModeToggle.addEventListener('click', toggleEditMode);
+
+      // 刷新按钮
+      elements.refreshBtn.addEventListener('click', () => {
+        elements.refreshBtn.classList.add('fa-spin');
+        
+        setTimeout(() => {
+          calculateTotals();
+          renderProductionLines();
+          
+          const now = new Date();
+          const updateTime = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          elements.lastUpdate.textContent = `最后更新: ${updateTime}`;
+          elements.footerUpdate.textContent = updateTime;
+          
+          elements.refreshBtn.classList.remove('fa-spin');
+          alert('数据已成功刷新！');
+        }, 800);
+      });
+
+      // Excel模态框
+      elements.importExcelBtn.addEventListener('click', () => {
+        // 编辑模式下先退出
+        if (isEditMode) {
+          toggleEditMode();
+        }
+        elements.excelModal.classList.remove('hidden');
+      });
+      
+      elements.closeModalBtn.addEventListener('click', () => {
+        elements.excelModal.classList.add('hidden');
+        resetFileInput();
+      });
+      
+      elements.cancelImportBtn.addEventListener('click', () => {
+        elements.excelModal.classList.add('hidden');
+        resetFileInput();
+      });
+
+      // 下载模板按钮
+      elements.downloadTemplateBtn.addEventListener('click', downloadExcelTemplate);
+      
+      // 文件上传处理（兼容微信端）
+      elements.fileDropArea.addEventListener('click', () => {
+        elements.excelFile.click();
+      });
+      
+      elements.excelFile.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          handleFileSelect(file);
+        }
+      });
+      
+      // 拖拽文件处理（移动端隐藏，仅桌面生效）
+      if (window.innerWidth >= 768) {
+        elements.fileDropArea.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          elements.fileDropArea.classList.add('border-primary');
+        });
+        
+        elements.fileDropArea.addEventListener('dragleave', () => {
+          elements.fileDropArea.classList.remove('border-primary');
+        });
+        
+        elements.fileDropArea.addEventListener('drop', async (e) => {
+          e.preventDefault();
+          elements.fileDropArea.classList.remove('border-primary');
+          
+          const file = e.dataTransfer.files[0];
+          if (file) {
+            handleFileSelect(file);
+          }
+        });
+      }
+      
+      // 确认导入
+      elements.confirmImportBtn.addEventListener('click', async () => {
+        const file = elements.excelFile.files[0];
+        if (!file) return;
+        
+        elements.confirmImportBtn.disabled = true;
+        elements.confirmImportBtn.innerHTML = '<i class="fa fa-spinner fa-spin mr-1 sm:mr-2"></i> 导入中...';
+        
+        try {
+          // 解析Excel文件
+          const parsedData = await parseExcelFile(file);
+          
+          // 更新全局数据
+          productionData = parsedData;
+          
+          // 刷新页面数据
+          calculateTotals();
+          renderProductionLines();
+          
+          // 更新时间
+          const now = new Date();
+          const updateTime = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          elements.lastUpdate.textContent = `最后更新: ${updateTime}`;
+          elements.footerUpdate.textContent = updateTime;
+          
+          // 提示成功
+          alert(`成功导入 ${parsedData.length} 条生产线数据！`);
+          elements.excelModal.classList.add('hidden');
+        } catch (error) {
+          alert(`导入失败: ${error}`);
+        } finally {
+          elements.confirmImportBtn.disabled = false;
+          elements.confirmImportBtn.textContent = '确认导入';
+          resetFileInput();
+        }
+      });
+      
+      // 生产线筛选
+      elements.applyFilterBtn.addEventListener('click', filterProductionLines);
+
+      // 窗口大小变化时重新渲染（适配旋转屏幕）
+      window.addEventListener('resize', () => {
+        renderProductionLines();
+        calculateTotals();
+      });
+    }
+
+    // 处理文件选择
+    function handleFileSelect(file) {
+      elements.fileName.textContent = file.name;
+      elements.fileSize.textContent = `${(file.size / 1024).toFixed(2)} KB`;
+      elements.fileInfo.classList.remove('hidden');
+      elements.confirmImportBtn.disabled = false;
+    }
+
+    // 重置文件输入
+    function resetFileInput() {
+      elements.excelFile.value = '';
+      elements.fileInfo.classList.add('hidden');
+      elements.confirmImportBtn.disabled = true;
+    }
+
+    // 初始化应用
+    function initApp() {
+      initDateTime();
+      calculateTotals();
+      renderProductionLines();
+      bindEvents();
+      
+      // 微信端适配：隐藏浏览器默认工具栏（可选）
+      if (/(MicroMessenger)/i.test(navigator.userAgent)) {
+        document.body.style.paddingTop = '0';
+      }
+    }
+
+    // 页面加载完成后初始化（兼容微信端DOM加载）
+    document.addEventListener('DOMContentLoaded', initApp);
+    
+    // 微信端主动触发加载（防止延迟）
+    if (/(MicroMessenger)/i.test(navigator.userAgent)) {
+      window.onload = function() {
+        initApp();
+      };
+    }
+  </script>
+</body>
+</html>
